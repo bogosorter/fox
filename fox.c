@@ -28,14 +28,23 @@ int main(int argc, char **argv) {
         exit(0);
     }
 
-    // Create the square network topology
+    // Create the grid network topology
 
     MPI_Comm grid;
+    MPI_Comm row_communicator;
+    MPI_Comm column_communicator;
     int dimension_count = 2;
     int dimensions[2] = {n, n};
     int wrap_around[2] = {0, 1};
     int reorder = 1;
     MPI_Cart_create(MPI_COMM_WORLD, dimension_count, dimensions, wrap_around, reorder, &grid);
+
+    // Create row and column sub-communicators
+    int free_axis[2] = {0, 1};
+    MPI_Cart_sub(grid, free_axis, &row_communicator);
+    free_axis[0] = 1;
+    free_axis[1] = 0;
+    MPI_Cart_sub(grid, free_axis, &column_communicator);
 
     MPI_Comm_rank(grid, &rank);
     int row = rank / n;
@@ -72,8 +81,13 @@ int main(int argc, char **argv) {
 
     int destination_row = (row + n - 1) % n; // we add n to avoid negative values on the remainder
     int source_row = (row + 1) % n;
-    MPI_Send(&process_value, 1, MPI_INT, destination_row * n + column, 0, grid);
-    MPI_Recv(&process_value, 1, MPI_INT, source_row * n + column, 0, grid, NULL);
+    MPI_Send(&process_value, 1, MPI_INT, destination_row, 0, column_communicator);
+    MPI_Recv(&process_value, 1, MPI_INT, source_row, 0, column_communicator, NULL);
+
+    // Broadcast the value in the second column to all processes in the row
+
+    int source_column = 1;
+    MPI_Bcast(&process_value, 1, MPI_INT, source_column, row_communicator);
 
 
     // Gather the result from all processes and print it to stdout
