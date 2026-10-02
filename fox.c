@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
                 // When no edge exists, we assume an infinite weight, except if we
                 // are considering the path from a vertex to itself, whose length
                 // is always zero
-                // if (i != j && v == 0) v = INFINITY;
+                if (i != j && v == 0) v = INFINITY;
 
                 // Send to the corresponding process, or keep the value if it
                 // belongs to process 1.
@@ -79,28 +79,29 @@ int main(int argc, char **argv) {
 
     // Perform one matrix squaring
 
-    int result = 0;
-    int a = process_value;
+    for (int step = 1; step < n; step *= 2) {
+        int result = INFINITY;
+        int a = process_value;
 
-    for (int i = 0; i < n; i++) {
-        // At the i-th step, the value on the (i + row)-th column is broadcast accross the row
-        int b = process_value;
-        int source = (i + row) % n;
-        MPI_Bcast(&b, 1, MPI_INT, source, row_communicator);
+        for (int i = 0; i < n; i++) {
+            // At the i-th step, the value b on the (i + row)-th column is broadcast accross the row
+            int b = process_value;
+            int source = (i + row) % n;
+            MPI_Bcast(&b, 1, MPI_INT, source, row_communicator);
 
-        result += a * b;
+            result = min(result, a + b);
 
-        // After having started with its own value, each process broadcasts its value accross the column
-        if (i != n - 1) {
-            int destination = (row + n - 1) % n; // we add n to avoid negative values on the remainder
-            int source = (row + 1) % n;
-            a = process_value;
-            MPI_Send(&a, 1, MPI_INT, destination, 0, column_communicator);
-            MPI_Recv(&a, 1, MPI_INT, source, 0, column_communicator, NULL);
+            // After having started with its own value, each process broadcasts its value accross the column
+            if (i != n - 1) {
+                int destination = (row + n - 1) % n; // we add n to avoid negative values on the remainder
+                int source = (row + 1) % n;
+                MPI_Send(&a, 1, MPI_INT, destination, 0, column_communicator);
+                MPI_Recv(&a, 1, MPI_INT, source, 0, column_communicator, NULL);
+            }
         }
-    }
 
-    process_value = result;
+        process_value = result;
+    }
 
 
     // Gather the result from all processes and print it to stdout
@@ -120,6 +121,7 @@ int main(int argc, char **argv) {
             }
             printf("\n");
         }
+        printf("\n");
     } else {
         MPI_Send(&process_value, 1, MPI_INT, 0, 0, grid);
     }
