@@ -8,6 +8,15 @@ void swap(int **a, int **b);
 int min(int a, int b);
 void square_matrix(int n, int *matrix, int *result);
 
+typedef struct {
+    int n;
+    int row;
+    int column;
+    MPI_Comm grid;
+    MPI_Comm row_communicator;
+    MPI_Comm column_communicator;
+} TopologyInfo;
+
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
 
@@ -30,25 +39,24 @@ int main(int argc, char **argv) {
 
     // Create the grid network topology
 
-    MPI_Comm grid;
-    MPI_Comm row_communicator;
-    MPI_Comm column_communicator;
+    TopologyInfo topology;
     int dimension_count = 2;
     int dimensions[2] = {n, n};
     int wrap_around[2] = {0, 1};
     int reorder = 1;
-    MPI_Cart_create(MPI_COMM_WORLD, dimension_count, dimensions, wrap_around, reorder, &grid);
+    MPI_Cart_create(MPI_COMM_WORLD, dimension_count, dimensions, wrap_around, reorder, &topology.grid);
 
     // Create row and column sub-communicators
     int free_axis[2] = {0, 1};
-    MPI_Cart_sub(grid, free_axis, &row_communicator);
+    MPI_Cart_sub(topology.grid, free_axis, &topology.row_communicator);
     free_axis[0] = 1;
     free_axis[1] = 0;
-    MPI_Cart_sub(grid, free_axis, &column_communicator);
+    MPI_Cart_sub(topology.grid, free_axis, &topology.column_communicator);
 
-    MPI_Comm_rank(grid, &rank);
-    int row = rank / n;
-    int column = rank % n;
+    MPI_Comm_rank(topology.grid, &rank);
+    topology.n = n;
+    topology.row = rank / n;
+    topology.column = rank % n;
 
 
     // Process zero reads the input and sends to the corresponding processes
@@ -69,34 +77,34 @@ int main(int argc, char **argv) {
                 // Send to the corresponding process, or keep the value if it
                 // belongs to process 1.
                 if (i == 0 && j == 0) process_value = v;
-                else MPI_Send(&v, 1, MPI_INT, i * n + j, 0, grid);
+                else MPI_Send(&v, 1, MPI_INT, i * n + j, 0, topology.grid);
             }
         }
     } else {
-        MPI_Recv(&process_value, 1, MPI_INT, 0, 0, grid, NULL);
+        MPI_Recv(&process_value, 1, MPI_INT, 0, 0, topology.grid, NULL);
     }
 
 
-    // Perform one matrix squaring
+    // Use the repeated squaring method to calculate the distance matrix
 
-    for (int step = 1; step < n; step *= 2) {
+    for (int step = 1; step < topology.n; step *= 2) {
         int result = INFINITY;
         int a = process_value;
 
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < topology.n; i++) {
             // At the i-th step, the value b on the (i + row)-th column is broadcast accross the row
             int b = process_value;
-            int source = (i + row) % n;
-            MPI_Bcast(&b, 1, MPI_INT, source, row_communicator);
+            int source = (i + topology.row) % n;
+            MPI_Bcast(&b, 1, MPI_INT, source, topology.row_communicator);
 
             result = min(result, a + b);
 
             // After having started with its own value, each process broadcasts its value accross the column
             if (i != n - 1) {
-                int destination = (row + n - 1) % n; // we add n to avoid negative values on the remainder
-                int source = (row + 1) % n;
-                MPI_Send(&a, 1, MPI_INT, destination, 0, column_communicator);
-                MPI_Recv(&a, 1, MPI_INT, source, 0, column_communicator, NULL);
+                int destination = (topology.row + n - 1) % n; // we add n to avoid negative values on the remainder
+                int source = (topology.row + 1) % n;
+                MPI_Send(&a, 1, MPI_INT, destination, 0, topology.column_communicator);
+                MPI_Recv(&a, 1, MPI_INT, source, 0, topology.column_communicator, NULL);
             }
         }
 
@@ -113,7 +121,7 @@ int main(int argc, char **argv) {
 
                 int v;
                 if (i == 0 && j == 0) v = process_value;
-                else MPI_Recv(&v, 1, MPI_INT, i * n + j, 0, grid, NULL);
+                else MPI_Recv(&v, 1, MPI_INT, i * n + j, 0, topology.grid, NULL);
 
                 // When no path exists, we output 0
                 if (v == INFINITY) printf("%d", 0);
@@ -121,9 +129,8 @@ int main(int argc, char **argv) {
             }
             printf("\n");
         }
-        printf("\n");
     } else {
-        MPI_Send(&process_value, 1, MPI_INT, 0, 0, grid);
+        MPI_Send(&process_value, 1, MPI_INT, 0, 0, topology.grid);
     }
 
     MPI_Finalize();
