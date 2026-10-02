@@ -37,9 +37,9 @@ int main(int argc, char **argv) {
     int reorder = 1;
     MPI_Cart_create(MPI_COMM_WORLD, dimension_count, dimensions, wrap_around, reorder, &grid);
 
-    int coordinates[2];
     MPI_Comm_rank(grid, &rank);
-    MPI_Cart_coords(grid, rank, dimension_count, coordinates);
+    int row = rank / n;
+    int column = rank % n;
 
 
     // Process zero reads the input and sends to the corresponding processes
@@ -66,6 +66,14 @@ int main(int argc, char **argv) {
     } else {
         MPI_Recv(&process_value, 1, MPI_INT, 0, 0, grid, NULL);
     }
+
+
+    // Perform a single vertical shift of the numbers
+
+    int destination_row = (row + n - 1) % n; // we add n to avoid negative values on the remainder
+    int source_row = (row + 1) % n;
+    MPI_Send(&process_value, 1, MPI_INT, destination_row * n + column, 0, grid);
+    MPI_Recv(&process_value, 1, MPI_INT, source_row * n + column, 0, grid, NULL);
 
 
     // Gather the result from all processes and print it to stdout
