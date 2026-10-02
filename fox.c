@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
                 // When no edge exists, we assume an infinite weight, except if we
                 // are considering the path from a vertex to itself, whose length
                 // is always zero
-                if (i != j && v == 0) v = INFINITY;
+                // if (i != j && v == 0) v = INFINITY;
 
                 // Send to the corresponding process, or keep the value if it
                 // belongs to process 1.
@@ -77,17 +77,30 @@ int main(int argc, char **argv) {
     }
 
 
-    // Perform a single vertical shift of the numbers
+    // Perform one matrix squaring
 
-    int destination_row = (row + n - 1) % n; // we add n to avoid negative values on the remainder
-    int source_row = (row + 1) % n;
-    MPI_Send(&process_value, 1, MPI_INT, destination_row, 0, column_communicator);
-    MPI_Recv(&process_value, 1, MPI_INT, source_row, 0, column_communicator, NULL);
+    int result = 0;
+    int a = process_value;
 
-    // Broadcast the value in the second column to all processes in the row
+    for (int i = 0; i < n; i++) {
+        // At the i-th step, the value on the (i + row)-th column is broadcast accross the row
+        int b = process_value;
+        int source = (i + row) % n;
+        MPI_Bcast(&b, 1, MPI_INT, source, row_communicator);
 
-    int source_column = 1;
-    MPI_Bcast(&process_value, 1, MPI_INT, source_column, row_communicator);
+        result += a * b;
+
+        // After having started with its own value, each process broadcasts its value accross the column
+        if (i != n - 1) {
+            int destination = (row + n - 1) % n; // we add n to avoid negative values on the remainder
+            int source = (row + 1) % n;
+            a = process_value;
+            MPI_Send(&a, 1, MPI_INT, destination, 0, column_communicator);
+            MPI_Recv(&a, 1, MPI_INT, source, 0, column_communicator, NULL);
+        }
+    }
+
+    process_value = result;
 
 
     // Gather the result from all processes and print it to stdout
