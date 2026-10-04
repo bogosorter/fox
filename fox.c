@@ -19,7 +19,7 @@ typedef struct {
 
 void swap(int **a, int **b);
 int min(int a, int b);
-void square_matrix(int n, int *matrix, int *result);
+void matrix_multiplication_step(int n, int *a, int *b, int *result);
 void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology);
 
 int main(int argc, char **argv) {
@@ -184,13 +184,7 @@ void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology)
         if (source == topology->column) memcpy(b, process_submatrix, sizeof(int) * submatrix_size);
         MPI_Bcast(b, submatrix_size, MPI_INT, source, topology->row_communicator);
 
-        for (int i = 0; i < topology->nq; i++) {
-            for (int j = 0; j < topology->nq; j++) {
-                for (int k = 0; k < topology->nq; k++) {
-                    result[i * topology->nq + j] = min(result[i * topology->nq + j], b[i * topology->nq + k] + a[k * topology->nq + j]);
-                }
-            }
-        }
+        matrix_multiplication_step(topology->nq, b, a, result);
 
         // After having started with its own value, each process broadcasts the value of b accross the column
         if (step != topology->q - 1) {
@@ -203,17 +197,11 @@ void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology)
     memcpy(process_submatrix, result, sizeof(int) * submatrix_size);
 }
 
-void square_matrix(int n, int *matrix, int *result) {
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            result[i * n + j] = matrix[i * n + j];
-        }
-    }
-
+void matrix_multiplication_step(int n, int *a, int *b, int *result) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             for (int k = 0; k < n; k++) {
-                result[i * n + j] = min(result[i * n + j], matrix[i * n + k] + matrix[k * n + j]);
+                result[i * n + j] = min(result[i * n + j], a[i * n + k] + b[k * n + j]);
             }
         }
     }
