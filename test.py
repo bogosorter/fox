@@ -2,7 +2,7 @@ import os
 import subprocess
 
 print('compiling', end='')
-subprocess.run(['gcc', '-Wall', 'fox.c', '-o', 'fox'], check = True)
+subprocess.run(['make'], check = True)
 
 failed = 0
 
@@ -24,7 +24,7 @@ for dirpath, _, filenames in os.walk('tests'):
             expected = f.read()
 
         print(f'\rtesting input {input_path}', end='')
-        result = subprocess.run('./fox', input = input, capture_output = True, text = True, check = True).stdout
+        result = subprocess.run(['mpirun', '-np', '9', '--oversubscribe', './fox'], input = input, capture_output = True, text = True, check = True).stdout
 
         if result.strip() != expected.strip():
             failed += 1
