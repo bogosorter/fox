@@ -196,8 +196,7 @@ void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology)
         if (step != topology->q - 1) {
             int destination = (topology->row + topology->q - 1) % topology->q; // we add n to avoid negative values on the remainder
             int source = (topology->row + 1) % topology->q;
-            MPI_Send(a, submatrix_size, MPI_INT, destination, 0, topology->column_communicator);
-            MPI_Recv(a, submatrix_size, MPI_INT, source, 0, topology->column_communicator, NULL);
+            MPI_Sendrecv_replace(a, submatrix_size, MPI_INT, destination, 0, source, 0, topology->column_communicator, NULL);
         }
     }
 
