@@ -1,12 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include <mpi.h>
 
 #define INF 1e9
 
 typedef struct {
     int q;
+    int nq;
     int row;
     int column;
     MPI_Comm grid;
@@ -18,7 +20,7 @@ typedef struct {
 void swap(int **a, int **b);
 int min(int a, int b);
 void square_matrix(int n, int *matrix, int *result);
-int distributed_matrix_squaring(int process_value, TopologyInfo *topology);
+void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology);
 
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
@@ -67,6 +69,7 @@ int main(int argc, char **argv) {
 
     MPI_Comm_rank(topology.grid, &rank);
     topology.q = q;
+    topology.nq = nq;
     topology.row = rank / q;
     topology.column = rank % q;
 
@@ -117,9 +120,9 @@ int main(int argc, char **argv) {
     
     // Use the repeated squaring method to calculate the distance matrix
 
-    // for (int step = 1; step < topology.n; step *= 2) {
-    //     process_value = distributed_matrix_squaring(process_value, &topology);
-    // }
+    for (int step = 1; step < n; step *= 2) {
+        distributed_matrix_squaring(process_matrix, &topology);
+    }
 
 
     // Gather the result from all processes and print it to stdout
@@ -160,28 +163,45 @@ int main(int argc, char **argv) {
     MPI_Finalize();
 }
 
-int distributed_matrix_squaring(int process_value, TopologyInfo *topology) {
-    int result = INF;
-    int a = process_value;
-
-    for (int i = 0; i < topology->q; i++) {
-        // At the i-th step, the value b on the (i + row)-th column is broadcast accross the row
-        int b = process_value;
-        int source = (i + topology->row) % topology->q;
-        MPI_Bcast(&b, 1, MPI_INT, source, topology->row_communicator);
-
-        result = min(result, a + b);
-
-        // After having started with its own value, each process broadcasts its value accross the column
-        if (i != topology->q - 1) {
-            int destination = (topology->row + topology->q - 1) % topology->q; // we add n to avoid negative values on the remainder
-            int source = (topology->row + 1) % topology->q;
-            MPI_Send(&a, 1, MPI_INT, destination, 0, topology->column_communicator);
-            MPI_Recv(&a, 1, MPI_INT, source, 0, topology->column_communicator, NULL);
+void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology) {
+    int submatrix_size = topology->nq * topology->nq;
+    
+    int *result = malloc(sizeof(int) * submatrix_size);
+    for (int i = 0; i < topology->nq; i++) {
+        for (int j = 0; j < topology->nq; j++) {
+            result[i * topology->nq + j] = INF;
         }
     }
 
-    return result;
+    int *a = malloc(sizeof(int) * topology->nq * topology->nq);
+    memcpy(a, process_submatrix, sizeof(int) * submatrix_size);
+    
+    int *b = malloc(sizeof(int) * submatrix_size);
+
+    for (int step = 0; step < topology->q; step++) {
+        // At the step-th iteration, the value b on the (step + row)-th column is broadcast accross the row
+        int source = (step + topology->row) % topology->q;
+        if (source == topology->column) memcpy(b, process_submatrix, sizeof(int) * submatrix_size);
+        MPI_Bcast(b, submatrix_size, MPI_INT, source, topology->row_communicator);
+
+        for (int i = 0; i < topology->nq; i++) {
+            for (int j = 0; j < topology->nq; j++) {
+                for (int k = 0; k < topology->nq; k++) {
+                    result[i * topology->nq + j] = min(result[i * topology->nq + j], b[i * topology->nq + k] + a[k * topology->nq + j]);
+                }
+            }
+        }
+
+        // After having started with its own value, each process broadcasts the value of b accross the column
+        if (step != topology->q - 1) {
+            int destination = (topology->row + topology->q - 1) % topology->q; // we add n to avoid negative values on the remainder
+            int source = (topology->row + 1) % topology->q;
+            MPI_Send(a, submatrix_size, MPI_INT, destination, 0, topology->column_communicator);
+            MPI_Recv(a, submatrix_size, MPI_INT, source, 0, topology->column_communicator, NULL);
+        }
+    }
+
+    memcpy(process_submatrix, result, sizeof(int) * submatrix_size);
 }
 
 void square_matrix(int n, int *matrix, int *result) {
