@@ -15,8 +15,8 @@ typedef struct {
     int processes;
     int rank;
     int n;
-    int q;
-    int nq;
+    int process_grid_size;
+    int submatrix_size;
     int row;
     int column;
     MPI_Comm grid;
@@ -68,24 +68,24 @@ void read_size(TopologyInfo *topology) {
     if (topology->rank == 0) scanf("%d", & topology->n);
     MPI_Bcast(& topology->n, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    topology->q = sqrt(topology->processes);
-    if (topology->q * topology->q != topology->processes) {
+    topology->process_grid_size = sqrt(topology->processes);
+    if (topology->process_grid_size * topology->process_grid_size != topology->processes) {
         MPI_Finalize();
         if (topology->rank == 0) printf("the number of processes must be a perfect square\n");
         exit(0);
     }
 
-    if (topology->n % topology->q != 0) {
+    if (topology->n % topology->process_grid_size != 0) {
         MPI_Finalize();
         if (topology->rank == 0) printf("sqrt(processes) must divide the size of the matrix\n");
         exit(0);
     }
-    topology->nq = topology->n / topology->q;
+    topology->submatrix_size = topology->n / topology->process_grid_size;
 }
 
 void create_grid(TopologyInfo *topology) {
     int dimension_count = 2;
-    int dimensions[2] = {topology->q, topology->q};
+    int dimensions[2] = {topology->process_grid_size, topology->process_grid_size};
     int wrap_around[2] = {0, 1};
     int reorder = 1;
     MPI_Cart_create(MPI_COMM_WORLD, dimension_count, dimensions, wrap_around, reorder, &topology->grid);
@@ -99,17 +99,17 @@ void create_grid(TopologyInfo *topology) {
     MPI_Cart_sub(topology->grid, free_axis, &topology->column_communicator);
 
     MPI_Comm_rank(topology->grid, &topology->rank);
-    topology->row = topology->rank / topology->q;
-    topology->column = topology->rank % topology->q;
+    topology->row = topology->rank / topology->process_grid_size;
+    topology->column = topology->rank % topology->process_grid_size;
 
-    // Create a datatype for identifying a submatrix nq * nq within a larger
+    // Create a datatype for identifying a submatrix submatrix_size * submatrix_size within a larger
     // topology->n * topology->n matrix
-    MPI_Type_vector(topology->nq, topology->nq, topology->n, MPI_INT, &topology->submatrix_type);
+    MPI_Type_vector(topology->submatrix_size, topology->submatrix_size, topology->n, MPI_INT, &topology->submatrix_type);
     MPI_Type_commit(&topology->submatrix_type);
 }
 
 int *read_input(TopologyInfo *topology) {
-    int *process_matrix = malloc(sizeof(int) * topology->nq * topology->nq);
+    int *process_matrix = malloc(sizeof(int) * topology->submatrix_size * topology->submatrix_size);
 
     if (topology->rank == 0) {
         int *full_matrix = malloc(sizeof(int) * topology->n * topology->n);
@@ -126,23 +126,23 @@ int *read_input(TopologyInfo *topology) {
         }
 
         // Save process zero's own submatrix
-        for (int i = 0; i < topology->nq; i++) {
-            for (int j = 0; j < topology->nq; j++) {
-                process_matrix[i * topology->nq + j] = full_matrix[i * topology->n + j];
+        for (int i = 0; i < topology->submatrix_size; i++) {
+            for (int j = 0; j < topology->submatrix_size; j++) {
+                process_matrix[i * topology->submatrix_size + j] = full_matrix[i * topology->n + j];
             }
         }
 
-        for (int i = 0; i < topology->q; i++) {
-            for (int j = 0; j < topology->q; j++) {
+        for (int i = 0; i < topology->process_grid_size; i++) {
+            for (int j = 0; j < topology->process_grid_size; j++) {
                 // Send the submatrix to the corresponding process
                 if (i == 0 && j == 0) continue;
-                else MPI_Send(&full_matrix[i * topology->nq * topology->n + j * topology->nq], 1, topology->submatrix_type, i * topology->q + j, 0, topology->grid);
+                else MPI_Send(&full_matrix[i * topology->submatrix_size * topology->n + j * topology->submatrix_size], 1, topology->submatrix_type, i * topology->process_grid_size + j, 0, topology->grid);
             }
         }
 
         free(full_matrix);
     } else {
-        MPI_Recv(process_matrix, topology->nq * topology->nq, MPI_INT, 0, 0, topology->grid, NULL);
+        MPI_Recv(process_matrix, topology->submatrix_size * topology->submatrix_size, MPI_INT, 0, 0, topology->grid, NULL);
     }
 
     return process_matrix;
@@ -153,17 +153,17 @@ void write_output(TopologyInfo *topology, int *process_submatrix) {
         int *full_matrix = malloc(sizeof(int) * topology->n * topology->n);
 
         // Copy process zero's own submatrix to the full matrix
-        for (int i = 0; i < topology->nq; i++) {
-            for (int j = 0; j < topology->nq; j++) {
-                full_matrix[i * topology->n + j] = process_submatrix[i * topology->nq + j];
+        for (int i = 0; i < topology->submatrix_size; i++) {
+            for (int j = 0; j < topology->submatrix_size; j++) {
+                full_matrix[i * topology->n + j] = process_submatrix[i * topology->submatrix_size + j];
             }
         }
 
-        for (int i = 0; i < topology->q; i++) {
-            for (int j = 0; j < topology->q; j++) {
+        for (int i = 0; i < topology->process_grid_size; i++) {
+            for (int j = 0; j < topology->process_grid_size; j++) {
                 // Send the submatrix to the corresponding process
                 if (i == 0 && j == 0) continue;
-                else MPI_Recv(&full_matrix[i * topology->nq * topology->n + j * topology->nq], 1, topology->submatrix_type, i * topology->q + j, 0, topology->grid, NULL);
+                else MPI_Recv(&full_matrix[i * topology->submatrix_size * topology->n + j * topology->submatrix_size], 1, topology->submatrix_type, i * topology->process_grid_size + j, 0, topology->grid, NULL);
             }
         }
 
@@ -178,37 +178,37 @@ void write_output(TopologyInfo *topology, int *process_submatrix) {
             printf("\n");
         }
     } else {
-        MPI_Send(process_submatrix, topology->nq * topology->nq, MPI_INT, 0, 0, topology->grid);
+        MPI_Send(process_submatrix, topology->submatrix_size * topology->submatrix_size, MPI_INT, 0, 0, topology->grid);
     }
 }
 
 void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology) {
-    int submatrix_size = topology->nq * topology->nq;
+    int submatrix_size = topology->submatrix_size * topology->submatrix_size;
     
     int *result = malloc(sizeof(int) * submatrix_size);
-    for (int i = 0; i < topology->nq; i++) {
-        for (int j = 0; j < topology->nq; j++) {
-            result[i * topology->nq + j] = INF;
+    for (int i = 0; i < topology->submatrix_size; i++) {
+        for (int j = 0; j < topology->submatrix_size; j++) {
+            result[i * topology->submatrix_size + j] = INF;
         }
     }
 
-    int *a = malloc(sizeof(int) * topology->nq * topology->nq);
+    int *a = malloc(sizeof(int) * topology->submatrix_size * topology->submatrix_size);
     memcpy(a, process_submatrix, sizeof(int) * submatrix_size);
     
     int *b = malloc(sizeof(int) * submatrix_size);
 
-    for (int step = 0; step < topology->q; step++) {
+    for (int step = 0; step < topology->process_grid_size; step++) {
         // At the step-th iteration, the value b on the (step + row)-th column is broadcast accross the row
-        int source = (step + topology->row) % topology->q;
+        int source = (step + topology->row) % topology->process_grid_size;
         if (source == topology->column) memcpy(b, process_submatrix, sizeof(int) * submatrix_size);
         MPI_Bcast(b, submatrix_size, MPI_INT, source, topology->row_communicator);
 
-        matrix_multiplication_step(topology->nq, b, a, result);
+        matrix_multiplication_step(topology->submatrix_size, b, a, result);
 
         // After having started with its own value, each process broadcasts the value of b accross the column
-        if (step != topology->q - 1) {
-            int destination = (topology->row + topology->q - 1) % topology->q; // we add topology->q to avoid negative values on the remainder
-            int source = (topology->row + 1) % topology->q;
+        if (step != topology->process_grid_size - 1) {
+            int destination = (topology->row + topology->process_grid_size - 1) % topology->process_grid_size; // we add topology->process_grid_size to avoid negative values on the remainder
+            int source = (topology->row + 1) % topology->process_grid_size;
             MPI_Sendrecv_replace(a, submatrix_size, MPI_INT, destination, 0, source, 0, topology->column_communicator, NULL);
         }
     }
