@@ -1,232 +1,248 @@
+#include <mpi.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
-#include <mpi.h>
 
-// We define infinity to be a distance large enough to not occur in the data,
-// but still allowing infinity + infinity without overflow
+
+#define MIN(A, B) (A < B) ? A : B
+#define ROOT 0
+#define MPI_TAG 1
 #define INF 1e9
 
 
-// Information about the problem's topology and distribution accross multiple
-// processors
+// Contains information about the grid topology
 typedef struct {
-    int processes;
+    int n; // size of the original matrix
+    int q; // size of the matrix of processes
+    int nq; // size of each submatrix
     int rank;
-    int n;
-    int process_grid_size;
-    int submatrix_size;
     int row;
-    int column;
-    MPI_Comm grid;
+    int col;
+    int root; // grid rank of the world root process 
+    MPI_Comm communicator;
     MPI_Comm row_communicator;
     MPI_Comm column_communicator;
-    MPI_Datatype submatrix_type;
-} TopologyInfo;
+} GridInfo;
 
-// Helper functions
-void initialize_mpi(TopologyInfo *topology, int *argc, char ***argv);
-void read_size(TopologyInfo *topology);
-void create_grid(TopologyInfo *topology);
-int *read_input(TopologyInfo *topology);
-void write_output(TopologyInfo *topology, int *process_submatrix);
-void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology);
-void matrix_multiplication_step(int n, int *a, int *b, int *result);
-int min(int a, int b);
+// Contains information about a custom MPI datatype used to transmit
+// submatrices
+typedef struct {
+    MPI_Datatype blocktype; // The actual derived type
+    int *counts; // The number of blocks to send to each process (always 1)
+    int *displacements; // The offsets of those blocks relative to the full matrix
+} BlockLayout;
+
+
+// Ensures that the number of processes is valid and respects the size of the
+// matrix
+int validate_grid(int n, int processes, int q, int nq);
+
+// Creates the grid of processes
+GridInfo create_grid(int n, int rank, int processes);
+
+// Creates a derived MPI type for a submatrix
+BlockLayout create_block_layout(int n, int q, int rank);
+
+// Performs Fox's algorithm
+void fox(int *prossess_matrix, GridInfo *grid);
+
+// Performs a single sub-matrix multiplication step
+void fox_step(int n, int a[n][n], int b[n][n], int c[n][n]);
+
+void read_matrix(int n, int matrix[n][n]);
+void print_matrix(int n, int matrix[n][n]);
 
 
 int main(int argc, char **argv) {
-    TopologyInfo topology;
+    MPI_Init(&argc, &argv);
 
-    initialize_mpi(&topology, &argc, &argv);
-    read_size(&topology);
-    create_grid(&topology);
-    int *process_matrix = read_input(&topology);
+    int rank, processes;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &processes);
 
-    
-    // Use the repeated squaring method to calculate the distance matrix
+    int n;
+    if (rank == ROOT) scanf("%d", &n);
+    MPI_Bcast(&n, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
 
-    for (int step = 1; step < topology.n; step *= 2) {
-        distributed_matrix_squaring(process_matrix, &topology);
+    int q = sqrt(processes);
+    int nq = n / q;
+    if (validate_grid(n, processes, q, nq) == 1) {
+        if (rank == ROOT) printf("ERROR: Invalid configuration!\n");
+        MPI_Finalize();
+        exit(1);
     }
 
+    int full_matrix[n][n];
+    if (rank == ROOT) {
+        read_matrix(n, full_matrix);
+    }
 
-    write_output(&topology, process_matrix);
+    int time = MPI_Wtime();
+
+    BlockLayout layout = create_block_layout(n, q, rank);
+    GridInfo grid = create_grid(n, rank, processes);
     
-    free(process_matrix);
+    // The root process of scatterv must not be ROOT, as the process with rank
+    // ROOT on the grid communicator may no longer be the process that read the
+    // input, since reorder is set to 1
+    int sub_matrix[nq][nq];
+    MPI_Scatterv(full_matrix, layout.counts, layout.displacements, layout.blocktype, sub_matrix, nq * nq, MPI_INT, grid.root, grid.communicator);
+
+    fox(*sub_matrix, &grid);
+
+    // See above comment for a justification on why ROOT is not used
+    MPI_Gatherv(sub_matrix, nq * nq, MPI_INT, full_matrix, layout.counts, layout.displacements, layout.blocktype, grid.root, grid.communicator);
+
+    if (rank == ROOT) {
+        time = MPI_Wtime() - time;
+        print_matrix(n, full_matrix);
+    }
+
+    free(layout.counts);
+    free(layout.displacements);
+    MPI_Comm_free(&grid.communicator);
+    MPI_Comm_free(&grid.row_communicator);
+    MPI_Comm_free(&grid.column_communicator);
+    MPI_Type_free(&layout.blocktype);
     MPI_Finalize();
+
+    return 0;
 }
 
-void initialize_mpi(TopologyInfo *topology, int *argc, char ***argv) {
-    MPI_Init(argc, argv);
-    MPI_Comm_size(MPI_COMM_WORLD, &topology->processes);
-    MPI_Comm_rank(MPI_COMM_WORLD, &topology->rank);
-}
+GridInfo create_grid(int n, int rank, int processes) {
+    GridInfo grid;
+    grid.n = n;
+    grid.q = sqrt(processes);
+    grid.nq = n / grid.q;
 
-void read_size(TopologyInfo *topology) {
-    if (topology->rank == 0) scanf("%d", & topology->n);
-    MPI_Bcast(& topology->n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-    topology->process_grid_size = sqrt(topology->processes);
-    if (topology->process_grid_size * topology->process_grid_size != topology->processes) {
-        MPI_Finalize();
-        if (topology->rank == 0) printf("the number of processes must be a perfect square\n");
-        exit(0);
-    }
-
-    if (topology->n % topology->process_grid_size != 0) {
-        MPI_Finalize();
-        if (topology->rank == 0) printf("sqrt(processes) must divide the size of the matrix\n");
-        exit(0);
-    }
-    topology->submatrix_size = topology->n / topology->process_grid_size;
-}
-
-void create_grid(TopologyInfo *topology) {
-    int dimension_count = 2;
-    int dimensions[2] = {topology->process_grid_size, topology->process_grid_size};
-    int wrap_around[2] = {0, 1};
+    int dimensions[2] = {grid.q, grid.q};
+    int periods[2] = {1, 1};
     int reorder = 1;
-    MPI_Cart_create(MPI_COMM_WORLD, dimension_count, dimensions, wrap_around, reorder, &topology->grid);
+    MPI_Cart_create(MPI_COMM_WORLD, 2, dimensions, periods, reorder, &(grid.communicator));
 
-    // Create row and column sub-communicators
+    int coordinates[2];
+    MPI_Comm_rank(grid.communicator, &(grid.rank));
+    MPI_Cart_coords(grid.communicator, grid.rank, 2, coordinates);
+    grid.row = coordinates[0];
+    grid.col = coordinates[1];
+
+    int remain_row[2] = {0, 1};
+    int remain_col[2] = {1, 0};
+    MPI_Cart_sub(grid.communicator, remain_row, &(grid.row_communicator));
+    MPI_Cart_sub(grid.communicator, remain_col, &(grid.column_communicator));
+
+    if (rank == ROOT) grid.root = grid.rank;
+    MPI_Bcast(&grid.root, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+
+    return grid;
+}
+
+BlockLayout create_block_layout(int n, int q, int rank) {
+    BlockLayout layout = {};
+
+    int nq = n / q;
+
+    // Due to the memory layout of the full matrix, the submatrices are not
+    // contiguous. As such, sending the second matrix requires starting at a
+    // position that is in the middle of the first matrix. MPI only accepts
+    // displacements that are multiples of the datasize, though, which requires
+    // us to shrink the size of our created type.
+    MPI_Datatype block;
+    MPI_Type_vector(nq, nq, n, MPI_INT, &block);
+    MPI_Type_create_resized(block, 0, sizeof(int), &layout.blocktype);
+    MPI_Type_commit(&layout.blocktype);
+    MPI_Type_free(&block);
+
+    if (rank == 0) {
+        layout.counts = malloc(q * q * sizeof(int));
+        layout.displacements = malloc(q * q * sizeof(int));
+        for (int i = 0; i < q; i++) {
+            for (int j = 0; j < q; j++) {
+                layout.counts[i * q + j] = 1;
+                layout.displacements[i * q + j] = i * nq * n + j * nq;
+            }
+        }
+    }
+    return layout;
+}
+
+void fox(int *submatrix, GridInfo *grid) {
+    // See report for a detailed description of Fox's algorithm
+
+    int nq = grid->nq;
+    size_t size = nq * nq * sizeof(int);
+
+    int result[nq][nq];
+    int row_matrix[nq][nq];
+    int column_matrix[nq][nq];
+    memcpy(result, submatrix, size);
     
-    int free_axis[2] = {0, 1};
-    MPI_Cart_sub(topology->grid, free_axis, &topology->row_communicator);
-    free_axis[0] = 1;
-    free_axis[1] = 0;
-    MPI_Cart_sub(topology->grid, free_axis, &topology->column_communicator);
-
-    MPI_Comm_rank(topology->grid, &topology->rank);
-    topology->row = topology->rank / topology->process_grid_size;
-    topology->column = topology->rank % topology->process_grid_size;
-
-    // Create a datatype for identifying a submatrix submatrix_size * submatrix_size within a larger
-    // topology->n * topology->n matrix
-    MPI_Type_vector(topology->submatrix_size, topology->submatrix_size, topology->n, MPI_INT, &topology->submatrix_type);
-    MPI_Type_commit(&topology->submatrix_type);
-}
-
-int *read_input(TopologyInfo *topology) {
-    int *process_matrix = malloc(sizeof(int) * topology->submatrix_size * topology->submatrix_size);
-
-    if (topology->rank == 0) {
-        int *full_matrix = malloc(sizeof(int) * topology->n * topology->n);
-
-        for (int i = 0; i < topology->n; i++) {
-            for (int j = 0; j < topology->n; j++) {
-                scanf("%d", &full_matrix[i * topology->n + j]);
-
-                // When no edge exists, we assume an infinite weight, except if we
-                // are considering the path from a vertex to itself, whose length
-                // is always zero
-                if (i != j && full_matrix[i * topology->n + j] == 0) full_matrix[i * topology->n + j] = INF;
-            }
-        }
-
-        // Save process zero's own submatrix
-        for (int i = 0; i < topology->submatrix_size; i++) {
-            for (int j = 0; j < topology->submatrix_size; j++) {
-                process_matrix[i * topology->submatrix_size + j] = full_matrix[i * topology->n + j];
-            }
-        }
-
-        for (int i = 0; i < topology->process_grid_size; i++) {
-            for (int j = 0; j < topology->process_grid_size; j++) {
-                // Send the submatrix to the corresponding process
-                if (i == 0 && j == 0) continue;
-                else MPI_Send(&full_matrix[i * topology->submatrix_size * topology->n + j * topology->submatrix_size], 1, topology->submatrix_type, i * topology->process_grid_size + j, 0, topology->grid);
-            }
-        }
-
-        free(full_matrix);
-    } else {
-        MPI_Recv(process_matrix, topology->submatrix_size * topology->submatrix_size, MPI_INT, 0, 0, topology->grid, NULL);
-    }
-
-    return process_matrix;
-}
-
-void write_output(TopologyInfo *topology, int *process_submatrix) {
-    if (topology->rank == 0) {
-        int *full_matrix = malloc(sizeof(int) * topology->n * topology->n);
-
-        // Copy process zero's own submatrix to the full matrix
-        for (int i = 0; i < topology->submatrix_size; i++) {
-            for (int j = 0; j < topology->submatrix_size; j++) {
-                full_matrix[i * topology->n + j] = process_submatrix[i * topology->submatrix_size + j];
-            }
-        }
-
-        for (int i = 0; i < topology->process_grid_size; i++) {
-            for (int j = 0; j < topology->process_grid_size; j++) {
-                // Send the submatrix to the corresponding process
-                if (i == 0 && j == 0) continue;
-                else MPI_Recv(&full_matrix[i * topology->submatrix_size * topology->n + j * topology->submatrix_size], 1, topology->submatrix_type, i * topology->process_grid_size + j, 0, topology->grid, NULL);
-            }
-        }
-
-        for (int i = 0; i < topology->n; i++) {
-            for (int j = 0; j < topology->n; j++) {
-                if (j) printf(" ");
-
-                // When no path exists, we output 0
-                if (full_matrix[i * topology->n + j] == INF) printf("%d", 0);
-                else printf("%d", full_matrix[i * topology->n + j]);
-            }
-            printf("\n");
-        }
-    } else {
-        MPI_Send(process_submatrix, topology->submatrix_size * topology->submatrix_size, MPI_INT, 0, 0, topology->grid);
-    }
-}
-
-void distributed_matrix_squaring(int *process_submatrix, TopologyInfo *topology) {
-    int submatrix_size = topology->submatrix_size * topology->submatrix_size;
+    int source = (grid->row + 1) % grid->q;
+    int dest = (grid->row + grid->q - 1) % grid->q; // we add grid->q to avoid negative remainder values
     
-    int *result = malloc(sizeof(int) * submatrix_size);
-    for (int i = 0; i < topology->submatrix_size; i++) {
-        for (int j = 0; j < topology->submatrix_size; j++) {
-            result[i * topology->submatrix_size + j] = INF;
+    for (int matrix_power = 1; matrix_power < grid->n; matrix_power *= 2) {
+        memcpy(column_matrix, submatrix, size);
+        
+        for (int step = 0; step < grid->q; step++) {
+            int row_root = (grid->row + step) % grid->q;
+            if (row_root == grid->col) memcpy(row_matrix, submatrix, size);
+            MPI_Bcast(row_matrix, nq * nq, MPI_INT, row_root, grid->row_communicator);
+            
+            fox_step(nq, row_matrix, column_matrix, result);
+            
+            if (step < grid->q - 1) {
+                MPI_Sendrecv_replace(column_matrix, nq * nq, MPI_INT, dest, MPI_TAG, source, MPI_TAG, grid->column_communicator, MPI_STATUS_IGNORE);
+            }
         }
+
+        memcpy(submatrix, result, size);
     }
-
-    int *a = malloc(sizeof(int) * topology->submatrix_size * topology->submatrix_size);
-    memcpy(a, process_submatrix, sizeof(int) * submatrix_size);
-    
-    int *b = malloc(sizeof(int) * submatrix_size);
-
-    for (int step = 0; step < topology->process_grid_size; step++) {
-        // At the step-th iteration, the value b on the (step + row)-th column is broadcast accross the row
-        int source = (step + topology->row) % topology->process_grid_size;
-        if (source == topology->column) memcpy(b, process_submatrix, sizeof(int) * submatrix_size);
-        MPI_Bcast(b, submatrix_size, MPI_INT, source, topology->row_communicator);
-
-        matrix_multiplication_step(topology->submatrix_size, b, a, result);
-
-        // After having started with its own value, each process broadcasts the value of b accross the column
-        if (step != topology->process_grid_size - 1) {
-            int destination = (topology->row + topology->process_grid_size - 1) % topology->process_grid_size; // we add topology->process_grid_size to avoid negative values on the remainder
-            int source = (topology->row + 1) % topology->process_grid_size;
-            MPI_Sendrecv_replace(a, submatrix_size, MPI_INT, destination, 0, source, 0, topology->column_communicator, NULL);
-        }
-    }
-
-    memcpy(process_submatrix, result, sizeof(int) * submatrix_size);
 }
 
-void matrix_multiplication_step(int n, int *a, int *b, int *result) {
+void fox_step(int n, int a[n][n], int b[n][n], int c[n][n]) {
+    int i, j, k;
+    for (i = 0; i < n; i++) {
+        for (j = 0; j < n; j++) {
+            for (k = 0; k < n; k++) {
+                c[i][j] = MIN(c[i][j], a[i][k] + b[k][j]);
+            }
+        }
+    }
+}
+
+int validate_grid(int n, int processes, int q, int nq) {
+    if (q * q != processes) return 1;
+    if (n % q != 0) return 1;
+    return 0;
+}
+
+void read_matrix(int n, int matrix[n][n]) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
-            for (int k = 0; k < n; k++) {
-                result[i * n + j] = min(result[i * n + j], a[i * n + k] + b[k * n + j]);
-            }
+            // The input format uses 0 when refering to the distance to a
+            // node to itself (which is actually 0) and when referring to
+            // a non-existing path (where we consider the distance to be
+            // infinite)
+            scanf("%d", &matrix[i][j]);
+            if (matrix[i][j] == 0 && i != j) matrix[i][j] = INF;
         }
     }
 }
 
-int min(int a, int b) {
-    if (a < b) return a;
-    return b;
+void print_matrix(int n, int matrix[n][n]) {
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            if (j) printf(" ");
+
+            // The input format uses 0 when refering to the distance to a
+            // node to itself (which is actually 0) and when referring to
+            // a non-existing path (where we consider the distance to be
+            // infinite)
+            int v = matrix[i][j];
+            if (v == INF) v = 0;
+            printf ("%d", v);
+        }
+        printf ("\n");
+    }
 }
