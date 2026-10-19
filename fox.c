@@ -48,10 +48,10 @@ BlockLayout create_block_layout(int n, int q, int rank);
 void fox(int *prossess_matrix, GridInfo *grid);
 
 // Performs a single sub-matrix multiplication step
-void fox_step(int n, int a[n][n], int b[n][n], int c[n][n]);
+void fox_step(int n, int *a, int *b, int *c);
 
-void read_matrix(int n, int matrix[n][n]);
-void print_matrix(int n, int matrix[n][n]);
+void read_matrix(int n, int *matrix);
+void print_matrix(int n, int *matrix);
 
 
 int main(int argc, char **argv) {
@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
-    int full_matrix[n][n];
+    int *full_matrix = malloc(sizeof(int) * n * n);
     if (rank == ROOT) {
         read_matrix(n, full_matrix);
     }
@@ -87,10 +87,10 @@ int main(int argc, char **argv) {
     // The root process of scatterv must not be ROOT, as the process with rank
     // ROOT on the grid communicator may no longer be the process that read the
     // input, since reorder is set to 1
-    int sub_matrix[nq][nq];
+    int *sub_matrix = malloc(sizeof(int) * nq * nq);
     MPI_Scatterv(full_matrix, layout.counts, layout.displacements, layout.blocktype, sub_matrix, nq * nq, MPI_INT, grid.root, grid.communicator);
 
-    fox(*sub_matrix, &grid);
+    fox(sub_matrix, &grid);
 
     // See above comment for a justification on why ROOT is not used
     MPI_Gatherv(sub_matrix, nq * nq, MPI_INT, full_matrix, layout.counts, layout.displacements, layout.blocktype, grid.root, grid.communicator);
@@ -177,9 +177,9 @@ void fox(int *submatrix, GridInfo *grid) {
     int nq = grid->nq;
     size_t size = nq * nq * sizeof(int);
 
-    int result[nq][nq];
-    int row_matrix[nq][nq];
-    int column_matrix[nq][nq];
+    int *result = malloc(sizeof(int) * nq * nq);
+    int *row_matrix = malloc(sizeof(int) * nq * nq);
+    int *column_matrix = malloc(sizeof(int) * nq * nq);
     memcpy(result, submatrix, size);
     
     int source = (grid->row + 1) % grid->q;
@@ -204,7 +204,7 @@ void fox(int *submatrix, GridInfo *grid) {
     }
 }
 
-void fox_step(int n, int a[n][n], int b[n][n], int c[n][n]) {
+void fox_step(int n, int *a, int *b, int *c) {
     // The normal order of the loops (i, j, k) is altered to (i, k, j) so as to
     // reduce the number of row-major changes, since j is only used to address
     // the column
@@ -212,7 +212,7 @@ void fox_step(int n, int a[n][n], int b[n][n], int c[n][n]) {
     for (i = 0; i < n; i++) {
         for (k = 0; k < n; k++) {
             for (j = 0; j < n; j++) {
-                c[i][j] = MIN(c[i][j], a[i][k] + b[k][j]);
+                c[i * n + j] = MIN(c[i * n + j], a[i * n + k] + b[k * n + j]);
             }
         }
     }
@@ -224,20 +224,20 @@ int validate_grid(int n, int processes, int q, int nq) {
     return 0;
 }
 
-void read_matrix(int n, int matrix[n][n]) {
+void read_matrix(int n, int *matrix) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             // The input format uses 0 when refering to the distance to a
             // node to itself (which is actually 0) and when referring to
             // a non-existing path (where we consider the distance to be
             // infinite)
-            scanf("%d", &matrix[i][j]);
-            if (matrix[i][j] == 0 && i != j) matrix[i][j] = INF;
+            scanf("%d", &matrix[i * n + j]);
+            if (matrix[i * n + j] == 0 && i != j) matrix[i * n + j] = INF;
         }
     }
 }
 
-void print_matrix(int n, int matrix[n][n]) {
+void print_matrix(int n, int *matrix) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             if (j) printf(" ");
@@ -246,7 +246,7 @@ void print_matrix(int n, int matrix[n][n]) {
             // node to itself (which is actually 0) and when referring to
             // a non-existing path (where we consider the distance to be
             // infinite)
-            int v = matrix[i][j];
+            int v = matrix[i * n + j];
             if (v == INF) v = 0;
             printf ("%d", v);
         }

@@ -26,6 +26,8 @@ for dirpath, _, filenames in os.walk('tests'):
 
         print(f'\rtesting input {input_path}', end='')
         result = subprocess.run(['mpirun', '-np', '9', '--oversubscribe', './fox'], input = input, capture_output = True, text = True, check = True).stdout
+        # Ignore the first line, which contains the time the algorithm run
+        result = result.split("\n", 1)[1]
 
         if result.strip() != expected.strip():
             failed += 1
