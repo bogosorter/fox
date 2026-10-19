@@ -78,7 +78,8 @@ int main(int argc, char **argv) {
         read_matrix(n, full_matrix);
     }
 
-    int time = MPI_Wtime();
+    MPI_Barrier(MPI_COMM_WORLD);
+    double start_time = MPI_Wtime();
 
     BlockLayout layout = create_block_layout(n, q, rank);
     GridInfo grid = create_grid(n, rank, processes);
@@ -94,8 +95,11 @@ int main(int argc, char **argv) {
     // See above comment for a justification on why ROOT is not used
     MPI_Gatherv(sub_matrix, nq * nq, MPI_INT, full_matrix, layout.counts, layout.displacements, layout.blocktype, grid.root, grid.communicator);
 
+    MPI_Barrier(MPI_COMM_WORLD);
+    double end_time = MPI_Wtime();
+    
     if (rank == ROOT) {
-        time = MPI_Wtime() - time;
+        printf("%f\n", end_time - start_time);
         print_matrix(n, full_matrix);
     }
 
@@ -147,7 +151,7 @@ BlockLayout create_block_layout(int n, int q, int rank) {
     // contiguous. As such, sending the second matrix requires starting at a
     // position that is in the middle of the first matrix. MPI only accepts
     // displacements that are multiples of the datasize, though, which requires
-    // us to shrink the size of our created type.
+    // us to shrink the virtual size of our created type.
     MPI_Datatype block;
     MPI_Type_vector(nq, nq, n, MPI_INT, &block);
     MPI_Type_create_resized(block, 0, sizeof(int), &layout.blocktype);
@@ -201,10 +205,13 @@ void fox(int *submatrix, GridInfo *grid) {
 }
 
 void fox_step(int n, int a[n][n], int b[n][n], int c[n][n]) {
+    // The normal order of the loops (i, j, k) is altered to (i, k, j) so as to
+    // reduce the number of row-major changes, since j is only used to address
+    // the column
     int i, j, k;
     for (i = 0; i < n; i++) {
-        for (j = 0; j < n; j++) {
-            for (k = 0; k < n; k++) {
+        for (k = 0; k < n; k++) {
+            for (j = 0; j < n; j++) {
                 c[i][j] = MIN(c[i][j], a[i][k] + b[k][j]);
             }
         }
