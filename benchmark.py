@@ -29,7 +29,7 @@ for dirpath, _, filenames in os.walk('tests'):
 
             times[n][p * p] = []
             for _ in range(2):
-                result = subprocess.run(['mpirun', '-np', str(p * p), '--oversubscribe', './fox'], input = input, capture_output = True, text = True, check = True).stdout
+                result = subprocess.run(['mpirun', '-np', str(p * p), '--hostfile', 'hostfile.txt', './fox'], input = input, capture_output = True, text = True, check = True).stdout
                 time = float(result.splitlines()[0])
                 times[n][p * p].append(time)
 

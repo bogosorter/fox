@@ -16,7 +16,8 @@ for dirpath, _, filenames in os.walk('tests'):
         if '5' in filename: continue
 
         input_path = f'{dirpath}/{filename}'
-        expected_path = f'{dirpath}/{filename.replace('input', 'output')}'
+        output_filename = filename.replace('input', 'output')
+        expected_path = f'{dirpath}/{output_filename}'
 
         with open(input_path) as f:
             input = f.read()
@@ -25,7 +26,7 @@ for dirpath, _, filenames in os.walk('tests'):
             expected = f.read()
 
         print(f'\rtesting input {input_path}', end='')
-        result = subprocess.run(['mpirun', '-np', '9', '--oversubscribe', './fox'], input = input, capture_output = True, text = True, check = True).stdout
+        result = subprocess.run(['mpirun', '-np', '9', '--hostfile', 'hostfile.txt', './fox'], input = input, capture_output = True, text = True, check = True).stdout
         # Ignore the first line, which contains the time the algorithm run
         result = result.split("\n", 1)[1]
 
